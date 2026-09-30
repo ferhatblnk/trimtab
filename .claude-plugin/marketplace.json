@@ -1,0 +1,15 @@
+{
+  "name": "trimtab",
+  "description": "trimtab: automatic, per-part effort for Claude Code.",
+  "owner": {
+    "name": "Ferhat Talha Bulanık",
+    "url": "https://github.com/ferhatblnk"
+  },
+  "plugins": [
+    {
+      "name": "trimtab",
+      "source": "./plugin",
+      "description": "Automatic effort for Claude Code: study the task at high effort, split it into parts, and run each part at the lowest effort that gets it right."
+    }
+  ]
+}

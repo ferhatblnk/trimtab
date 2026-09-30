@@ -1,0 +1,1 @@
+Customers report wrong delivery dates from `estimateDelivery`, especially for orders placed on Friday evenings, at weekends, and just after midnight Istanbul time. Our servers run in UTC. Fix `estimateDelivery` so it follows the rules in its doc comment, whatever time zone the server runs in.

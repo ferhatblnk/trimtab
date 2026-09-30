@@ -1,0 +1,238 @@
+diff --git a/README.md b/README.md
+index ac4d8ce..a7b44f2 100644
+--- a/README.md
++++ b/README.md
+@@ -14,6 +14,14 @@ Rates depend on the destination zone and the parcel weight.
+ | Europe | `EU` |
+ | Rest of the world | `WW` |
+ 
++## Invoice tax
++
++`computeInvoice(lines, { taxRatePercent, discountPercent = 0 })` from `src/tax.js` takes lines of `{ quantity, unitCents }` (a negative quantity is a credit line) and percentages with at most two decimals.
++
++- The invoice discount is `discountPercent` of the positive line nets, rounded half to even, and is split across the positive lines in proportion to their nets with the largest-remainder method (ties go to the earlier line). Credit lines get no discount.
++- Each line's tax is `taxRatePercent` of its net minus its discount, rounded half to even (symmetric for negatives).
++- It returns `{ lines, netCents, discountCents, taxCents, grossCents }`, with `{ netCents, discountCents, taxCents, grossCents }` per line. The math is exact integer arithmetic.
++
+ ## Delivery
+ 
+ `estimateDelivery(orderedAt, transitDays)` returns the expected delivery date in Istanbul time.
+diff --git a/src/tax.js b/src/tax.js
+new file mode 100644
+index 0000000..7544805
+--- /dev/null
++++ b/src/tax.js
+@@ -0,0 +1,99 @@
++// All arithmetic is done in BigInt so floating-point error can never change a cent.
++
++// A percentage with at most two decimals, as an integer number of hundredths of a percent.
++function toBasisPoints(percent, name) {
++  if (typeof percent !== 'number' || !(percent >= 0 && percent <= 100)) {
++    throw new Error(`Invalid ${name}: ${percent}`);
++  }
++  const basisPoints = Math.round(percent * 100);
++  if (Math.abs(percent * 100 - basisPoints) > 1e-6) {
++    throw new Error(`Invalid ${name}: ${percent} has more than two decimals`);
++  }
++  return BigInt(basisPoints);
++}
++
++function toBigInt(value, name) {
++  if (!Number.isSafeInteger(value)) {
++    throw new Error(`Invalid ${name}: ${value}`);
++  }
++  return BigInt(value);
++}
++
++function toNumber(value) {
++  const number = Number(value);
++  if (!Number.isSafeInteger(number)) {
++    throw new Error(`Amount out of range: ${value}`);
++  }
++  return number;
++}
++
++// numerator / denominator rounded half-to-even, symmetric for negatives. denominator > 0.
++export function divRoundHalfEven(numerator, denominator) {
++  const negative = numerator < 0n;
++  const abs = negative ? -numerator : numerator;
++  let quotient = abs / denominator;
++  const twiceRemainder = (abs % denominator) * 2n;
++  if (twiceRemainder > denominator || (twiceRemainder === denominator && quotient % 2n === 1n)) {
++    quotient += 1n;
++  }
++  return negative ? -quotient : quotient;
++}
++
++// Splits `total` across `weights` (all > 0) in proportion, with the largest-remainder method.
++export function allocateLargestRemainder(total, weights) {
++  const sum = weights.reduce((acc, weight) => acc + weight, 0n);
++  if (sum === 0n) {
++    return weights.map(() => 0n);
++  }
++  const shares = weights.map((weight) => (total * weight) / sum);
++  const remainders = weights.map((weight, index) => ({ index, remainder: (total * weight) % sum }));
++  let left = total - shares.reduce((acc, share) => acc + share, 0n);
++  remainders.sort((a, b) => (a.remainder === b.remainder ? a.index - b.index : a.remainder > b.remainder ? -1 : 1));
++  for (const { index } of remainders) {
++    if (left === 0n) {
++      break;
++    }
++    shares[index] += 1n;
++    left -= 1n;
++  }
++  return shares;
++}
++
++export function computeInvoice(lines, { taxRatePercent, discountPercent = 0 } = {}) {
++  const taxBp = toBasisPoints(taxRatePercent, 'taxRatePercent');
++  const discountBp = toBasisPoints(discountPercent, 'discountPercent');
++
++  const nets = lines.map((line) => toBigInt(line.quantity, 'quantity') * toBigInt(line.unitCents, 'unitCents'));
++  const positive = nets.map((net, index) => ({ net, index })).filter(({ net }) => net > 0n);
++  const positiveSum = positive.reduce((acc, { net }) => acc + net, 0n);
++
++  const invoiceDiscount = divRoundHalfEven(positiveSum * discountBp, 10000n);
++  const discounts = nets.map(() => 0n);
++  const allocated = allocateLargestRemainder(
++    invoiceDiscount,
++    positive.map(({ net }) => net),
++  );
++  positive.forEach(({ index }, i) => {
++    discounts[index] = allocated[i];
++  });
++
++  const result = nets.map((net, index) => {
++    const taxable = net - discounts[index];
++    const tax = divRoundHalfEven(taxable * taxBp, 10000n);
++    return { net, discount: discounts[index], tax, gross: taxable + tax };
++  });
++
++  const sum = (key) => toNumber(result.reduce((acc, line) => acc + line[key], 0n));
++  return {
++    lines: result.map((line) => ({
++      netCents: toNumber(line.net),
++      discountCents: toNumber(line.discount),
++      taxCents: toNumber(line.tax),
++      grossCents: toNumber(line.gross),
++    })),
++    netCents: sum('net'),
++    discountCents: sum('discount'),
++    taxCents: sum('tax'),
++    grossCents: sum('gross'),
++  };
++}
+diff --git a/test/tax.test.js b/test/tax.test.js
+new file mode 100644
+index 0000000..48c3063
+--- /dev/null
++++ b/test/tax.test.js
+@@ -0,0 +1,108 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { computeInvoice } from '../src/tax.js';
++
++test('computes lines and totals with a credit line', () => {
++  const result = computeInvoice(
++    [
++      { quantity: 1, unitCents: 1000 },
++      { quantity: 1, unitCents: 2000 },
++      { quantity: -1, unitCents: 500 },
++    ],
++    { taxRatePercent: 20, discountPercent: 10 },
++  );
++  assert.deepEqual(result, {
++    lines: [
++      { netCents: 1000, discountCents: 100, taxCents: 180, grossCents: 1080 },
++      { netCents: 2000, discountCents: 200, taxCents: 360, grossCents: 2160 },
++      { netCents: -500, discountCents: 0, taxCents: -100, grossCents: -600 },
++    ],
++    netCents: 2500,
++    discountCents: 300,
++    taxCents: 440,
++    grossCents: 2640,
++  });
++});
++
++test('discount defaults to zero', () => {
++  const result = computeInvoice([{ quantity: 3, unitCents: 250 }], { taxRatePercent: 8.25 });
++  assert.deepEqual(result.lines, [{ netCents: 750, discountCents: 0, taxCents: 62, grossCents: 812 }]);
++});
++
++test('rounds the invoice discount half to even', () => {
++  assert.equal(computeInvoice([{ quantity: 1, unitCents: 25 }], { taxRatePercent: 0, discountPercent: 10 }).discountCents, 2);
++  assert.equal(computeInvoice([{ quantity: 1, unitCents: 35 }], { taxRatePercent: 0, discountPercent: 10 }).discountCents, 4);
++});
++
++test('splits the discount with largest remainder, ties to the earlier line', () => {
++  const result = computeInvoice(
++    [
++      { quantity: 1, unitCents: 1 },
++      { quantity: -5, unitCents: 1 },
++      { quantity: 1, unitCents: 1 },
++      { quantity: 1, unitCents: 1 },
++    ],
++    { taxRatePercent: 0, discountPercent: 66.67 },
++  );
++  assert.equal(result.discountCents, 2);
++  assert.deepEqual(result.lines.map((line) => line.discountCents), [1, 0, 1, 0]);
++
++  const uneven = computeInvoice(
++    [
++      { quantity: 1, unitCents: 100 },
++      { quantity: 1, unitCents: 200 },
++      { quantity: 1, unitCents: 400 },
++    ],
++    { taxRatePercent: 0, discountPercent: 1 },
++  );
++  // 7 cents: exact shares 1, 2, 4.
++  assert.deepEqual(uneven.lines.map((line) => line.discountCents), [1, 2, 4]);
++
++  const remainders = computeInvoice(
++    [
++      { quantity: 1, unitCents: 1 },
++      { quantity: 1, unitCents: 2 },
++      { quantity: 1, unitCents: 4 },
++    ],
++    { taxRatePercent: 0, discountPercent: 50 },
++  );
++  // 3.5 rounds to 4 cents; exact shares 4/7, 8/7, 16/7 floor to 0, 1, 2; remainders 4, 1, 2.
++  assert.deepEqual(remainders.lines.map((line) => line.discountCents), [1, 1, 2]);
++});
++
++test('rounds tax half to even, symmetric for negatives', () => {
++  const tax = (unitCents, taxRatePercent) =>
++    computeInvoice([{ quantity: 1, unitCents }], { taxRatePercent }).taxCents;
++  assert.equal(tax(135, 10), 14);
++  assert.equal(tax(125, 10), 12);
++  assert.equal(tax(-135, 10), -14);
++  assert.equal(tax(-125, 10), -12);
++  assert.equal(tax(200, 8.25), 16);
++});
++
++test('floating-point error never changes a cent', () => {
++  // 1000 * 1.15 / 100 is 11.499999999999998 in floating point; exactly it is 11.5, which rounds to 12.
++  assert.equal(computeInvoice([{ quantity: 1, unitCents: 1000 }], { taxRatePercent: 1.15 }).taxCents, 12);
++  assert.equal(
++    computeInvoice([{ quantity: 1, unitCents: 1000 }], { taxRatePercent: 0, discountPercent: 1.15 }).discountCents,
++    12,
++  );
++});
++
++test('handles an empty invoice and an all-credit invoice', () => {
++  assert.deepEqual(computeInvoice([], { taxRatePercent: 20, discountPercent: 10 }), {
++    lines: [],
++    netCents: 0,
++    discountCents: 0,
++    taxCents: 0,
++    grossCents: 0,
++  });
++  const credit = computeInvoice([{ quantity: -2, unitCents: 500 }], { taxRatePercent: 20, discountPercent: 10 });
++  assert.deepEqual(credit.lines, [{ netCents: -1000, discountCents: 0, taxCents: -200, grossCents: -1200 }]);
++});
++
++test('rejects invalid percentages', () => {
++  assert.throws(() => computeInvoice([], { taxRatePercent: 101 }));
++  assert.throws(() => computeInvoice([], { taxRatePercent: 20, discountPercent: 1.234 }));
++  assert.throws(() => computeInvoice([], {}));
++});

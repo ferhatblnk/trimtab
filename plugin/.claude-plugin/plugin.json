@@ -1,0 +1,19 @@
+{
+  "name": "trimtab",
+  "displayName": "trimtab",
+  "version": "0.1.0",
+  "description": "Automatic effort for Claude Code: study the task at high effort, split it into parts, and run each part at the lowest effort that gets it right.",
+  "author": {
+    "name": "Ferhat Talha Bulanık"
+  },
+  "homepage": "https://github.com/ferhatblnk/trimtab",
+  "repository": "https://github.com/ferhatblnk/trimtab",
+  "license": "MIT",
+  "keywords": [
+    "effort",
+    "tokens",
+    "cost",
+    "subagents",
+    "orchestration"
+  ]
+}

@@ -1,0 +1,114 @@
+diff --git a/README.md b/README.md
+index ac4d8ce..aa9422d 100644
+--- a/README.md
++++ b/README.md
+@@ -4,6 +4,14 @@
+ 
+ Amounts are integer cents. `toCents("12.50")` returns `1250`, and `formatAmount(1250)` returns `"12.50"`.
+ 
++## Customers
++
++`createCustomer` takes an optional `currency`: a three-letter ISO 4217 code in upper case, such as `EUR`. It defaults to `USD` when omitted. Any other value, including lower case such as `eur`, throws `Invalid currency: <value>`.
++
++## Reports
++
++`invoicesToCsv(invoices)` writes the columns `id`, `customer`, `total` and `currency`. The currency comes from the invoice's customer, or `USD` when the customer has none.
++
+ ## Shipping
+ 
+ Rates depend on the destination zone and the parcel weight.
+diff --git a/src/customers.js b/src/customers.js
+index 229f1b6..25b159c 100644
+--- a/src/customers.js
++++ b/src/customers.js
+@@ -1,6 +1,8 @@
+ const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+ 
+-export function createCustomer({ id, name, email, country }) {
++export const DEFAULT_CURRENCY = 'USD';
++
++export function createCustomer({ id, name, email, country, currency = DEFAULT_CURRENCY }) {
+   if (!id) {
+     throw new Error('Missing id');
+   }
+@@ -13,5 +15,8 @@ export function createCustomer({ id, name, email, country }) {
+   if (!/^[A-Z]{2}$/.test(country ?? '')) {
+     throw new Error(`Invalid country: ${country}`);
+   }
+-  return { id, name: name.trim(), email, country };
++  if (typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency)) {
++    throw new Error(`Invalid currency: ${currency}`);
++  }
++  return { id, name: name.trim(), email, country, currency };
+ }
+diff --git a/src/report.js b/src/report.js
+index 02a7931..04ca5dd 100644
+--- a/src/report.js
++++ b/src/report.js
+@@ -1,3 +1,4 @@
++import { DEFAULT_CURRENCY } from './customers.js';
+ import { calcTotal } from './invoice.js';
+ import { formatAmount } from './money.js';
+ import { shippingRate } from './shipping.js';
+@@ -12,9 +13,14 @@ function toCsv(rows) {
+ }
+ 
+ export function invoicesToCsv(invoices) {
+-  const rows = [['id', 'customer', 'total']];
++  const rows = [['id', 'customer', 'total', 'currency']];
+   for (const invoice of invoices) {
+-    rows.push([invoice.id, invoice.customer.name, formatAmount(calcTotal(invoice.lines))]);
++    rows.push([
++      invoice.id,
++      invoice.customer.name,
++      formatAmount(calcTotal(invoice.lines)),
++      invoice.customer.currency ?? DEFAULT_CURRENCY,
++    ]);
+   }
+   return toCsv(rows);
+ }
+diff --git a/test/customers.test.js b/test/customers.test.js
+index 816f062..83acc7a 100644
+--- a/test/customers.test.js
++++ b/test/customers.test.js
+@@ -12,3 +12,20 @@ test('validates email and country', () => {
+   assert.throws(() => createCustomer({ id: 'c1', name: 'A', email: 'nope', country: 'TR' }), /Invalid email/);
+   assert.throws(() => createCustomer({ id: 'c1', name: 'A', email: 'a@b.test', country: 'tr' }), /Invalid country/);
+ });
++
++test('defaults currency to USD', () => {
++  const customer = createCustomer({ id: 'c1', name: 'A', email: 'a@b.test', country: 'TR' });
++  assert.equal(customer.currency, 'USD');
++});
++
++test('keeps a given currency', () => {
++  const customer = createCustomer({ id: 'c1', name: 'A', email: 'a@b.test', country: 'TR', currency: 'EUR' });
++  assert.equal(customer.currency, 'EUR');
++});
++
++test('validates currency', () => {
++  const base = { id: 'c1', name: 'A', email: 'a@b.test', country: 'TR' };
++  for (const currency of ['eur', 'EU', 'EURO', '', ' EUR', null, ['EUR']]) {
++    assert.throws(() => createCustomer({ ...base, currency }), { message: `Invalid currency: ${currency}` });
++  }
++});
+diff --git a/test/report.test.js b/test/report.test.js
+index e2b483f..72251eb 100644
+--- a/test/report.test.js
++++ b/test/report.test.js
+@@ -6,7 +6,14 @@ test('exports invoices as CSV', () => {
+   const csv = invoicesToCsv([
+     { id: 'inv-1', customer: { name: 'Acme, Inc.' }, lines: [{ quantity: 2, unitCents: 1250 }] },
+   ]);
+-  assert.equal(csv, 'id,customer,total\ninv-1,"Acme, Inc.",25.00');
++  assert.equal(csv, 'id,customer,total,currency\ninv-1,"Acme, Inc.",25.00,USD');
++});
++
++test('exports the customer currency with each invoice', () => {
++  const csv = invoicesToCsv([
++    { id: 'inv-1', customer: { name: 'Acme', currency: 'EUR' }, lines: [{ quantity: 1, unitCents: 999 }] },
++  ]);
++  assert.equal(csv, 'id,customer,total,currency\ninv-1,Acme,9.99,EUR');
+ });
+ 
+ test('exports shipments as CSV', () => {

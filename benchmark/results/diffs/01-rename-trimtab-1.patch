@@ -1,0 +1,50 @@
+diff --git a/src/invoice.js b/src/invoice.js
+index 0a66278..60570f5 100644
+--- a/src/invoice.js
++++ b/src/invoice.js
+@@ -2,7 +2,7 @@ export function lineAmount(line) {
+   return line.quantity * line.unitCents;
+ }
+ 
+-export function calcTotal(lines) {
++export function calculateInvoiceTotal(lines) {
+   return lines.reduce((sum, line) => sum + lineAmount(line), 0);
+ }
+ 
+diff --git a/src/report.js b/src/report.js
+index 02a7931..fd9db53 100644
+--- a/src/report.js
++++ b/src/report.js
+@@ -1,4 +1,4 @@
+-import { calcTotal } from './invoice.js';
++import { calculateInvoiceTotal } from './invoice.js';
+ import { formatAmount } from './money.js';
+ import { shippingRate } from './shipping.js';
+ 
+@@ -14,7 +14,7 @@ function toCsv(rows) {
+ export function invoicesToCsv(invoices) {
+   const rows = [['id', 'customer', 'total']];
+   for (const invoice of invoices) {
+-    rows.push([invoice.id, invoice.customer.name, formatAmount(calcTotal(invoice.lines))]);
++    rows.push([invoice.id, invoice.customer.name, formatAmount(calculateInvoiceTotal(invoice.lines))]);
+   }
+   return toCsv(rows);
+ }
+diff --git a/test/invoice.test.js b/test/invoice.test.js
+index 442a52b..29ea30d 100644
+--- a/test/invoice.test.js
++++ b/test/invoice.test.js
+@@ -1,10 +1,10 @@
+ import { test } from 'node:test';
+ import assert from 'node:assert/strict';
+-import { applyDiscount, calcTotal } from '../src/invoice.js';
++import { applyDiscount, calculateInvoiceTotal } from '../src/invoice.js';
+ 
+ test('totals invoice lines', () => {
+-  assert.equal(calcTotal([{ quantity: 2, unitCents: 1250 }, { quantity: 1, unitCents: 99 }]), 2599);
+-  assert.equal(calcTotal([]), 0);
++  assert.equal(calculateInvoiceTotal([{ quantity: 2, unitCents: 1250 }, { quantity: 1, unitCents: 99 }]), 2599);
++  assert.equal(calculateInvoiceTotal([]), 0);
+ });
+ 
+ test('applies a percentage discount', () => {

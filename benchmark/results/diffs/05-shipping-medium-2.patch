@@ -1,0 +1,159 @@
+diff --git a/README.md b/README.md
+index ac4d8ce..54717fd 100644
+--- a/README.md
++++ b/README.md
+@@ -11,9 +11,20 @@ Rates depend on the destination zone and the parcel weight.
+ | Zone | Code |
+ | --- | --- |
+ | Domestic | `DOM` |
+-| Europe | `EU` |
++| Europe | `EUR` |
+ | Rest of the world | `WW` |
+ 
++### Chargeable weight
++
++Parcels are priced by their chargeable weight. `chargeableWeightKg({ weightKg, lengthCm, widthCm, heightCm })` returns:
++
++- the larger of the actual weight and the volumetric weight, `lengthCm × widthCm × heightCm / 5000`,
++- rounded up to the next 0.5 kg; a value that is already a multiple of 0.5 kg stays as it is.
++
++When any dimension is missing, the actual weight is used, still rounded up to 0.5 kg.
++
++`shippingRate(weight, zone)` accepts either a weight in kg or a shipment object; given a shipment, it prices by the chargeable weight. `shipmentsToCsv` includes a `chargeableWeightKg` column after `weightKg` and prices each shipment by it.
++
+ ## Delivery
+ 
+ `estimateDelivery(orderedAt, transitDays)` returns the expected delivery date in Istanbul time.
+diff --git a/src/report.js b/src/report.js
+index 02a7931..5063d95 100644
+--- a/src/report.js
++++ b/src/report.js
+@@ -1,6 +1,6 @@
+ import { calcTotal } from './invoice.js';
+ import { formatAmount } from './money.js';
+-import { shippingRate } from './shipping.js';
++import { chargeableWeightKg, shippingRate } from './shipping.js';
+ 
+ function csvCell(value) {
+   const text = String(value);
+@@ -20,9 +20,10 @@ export function invoicesToCsv(invoices) {
+ }
+ 
+ export function shipmentsToCsv(shipments) {
+-  const rows = [['id', 'zone', 'weightKg', 'rateCents']];
++  const rows = [['id', 'zone', 'weightKg', 'chargeableWeightKg', 'rateCents']];
+   for (const shipment of shipments) {
+-    rows.push([shipment.id, shipment.zone, shipment.weightKg, shippingRate(shipment.weightKg, shipment.zone)]);
++    const chargeable = chargeableWeightKg(shipment);
++    rows.push([shipment.id, shipment.zone, shipment.weightKg, chargeable, shippingRate(chargeable, shipment.zone)]);
+   }
+   return toCsv(rows);
+ }
+diff --git a/src/shipping.js b/src/shipping.js
+index 5e46b11..115b063 100644
+--- a/src/shipping.js
++++ b/src/shipping.js
+@@ -1,6 +1,6 @@
+ export const ZONES = {
+   DOMESTIC: 'DOM',
+-  EUROPE: 'EU',
++  EUROPE: 'EUR',
+   WORLD: 'WW',
+ };
+ 
+@@ -11,7 +11,7 @@ const RATES = {
+     [20, 1900],
+     [Infinity, 4500],
+   ],
+-  EU: [
++  EUR: [
+     [1, 1200],
+     [5, 2400],
+     [20, 5200],
+@@ -25,7 +25,28 @@ const RATES = {
+   ],
+ };
+ 
+-export function shippingRate(weightKg, zone) {
++const VOLUMETRIC_DIVISOR = 5000;
++
++/**
++ * Billable weight of a shipment `{ weightKg, lengthCm, widthCm, heightCm }`: the larger of the
++ * actual and the volumetric weight (L × W × H / 5000), rounded up to the next 0.5 kg.
++ * When any dimension is missing, only the actual weight is used.
++ */
++export function chargeableWeightKg(shipment) {
++  const { weightKg, lengthCm, widthCm, heightCm } = shipment;
++  // Work in half-kilogram units so exact multiples of 0.5 are not bumped up by float error.
++  let halfKg = weightKg * 2;
++  if (lengthCm != null && widthCm != null && heightCm != null) {
++    halfKg = Math.max(halfKg, (lengthCm * widthCm * heightCm) / (VOLUMETRIC_DIVISOR / 2));
++  }
++  return Math.ceil(halfKg) / 2;
++}
++
++export function shippingRate(weightOrShipment, zone) {
++  const weightKg =
++    typeof weightOrShipment === 'object' && weightOrShipment !== null
++      ? chargeableWeightKg(weightOrShipment)
++      : weightOrShipment;
+   const table = RATES[zone];
+   if (!table) {
+     throw new Error(`Unknown zone: ${zone}`);
+diff --git a/test/report.test.js b/test/report.test.js
+index e2b483f..ff165f9 100644
+--- a/test/report.test.js
++++ b/test/report.test.js
+@@ -10,6 +10,9 @@ test('exports invoices as CSV', () => {
+ });
+ 
+ test('exports shipments as CSV', () => {
+-  const csv = shipmentsToCsv([{ id: 's-1', zone: 'DOM', weightKg: 2 }]);
+-  assert.equal(csv, 'id,zone,weightKg,rateCents\ns-1,DOM,2,900');
++  const csv = shipmentsToCsv([
++    { id: 's-1', zone: 'DOM', weightKg: 2 },
++    { id: 's-2', zone: 'EUR', weightKg: 0.8, lengthCm: 40, widthCm: 30, heightCm: 20 },
++  ]);
++  assert.equal(csv, 'id,zone,weightKg,chargeableWeightKg,rateCents\ns-1,DOM,2,2,900\ns-2,EUR,0.8,5,2400');
+ });
+diff --git a/test/shipping.test.js b/test/shipping.test.js
+index 24b964e..320d5be 100644
+--- a/test/shipping.test.js
++++ b/test/shipping.test.js
+@@ -1,6 +1,6 @@
+ import { test } from 'node:test';
+ import assert from 'node:assert/strict';
+-import { shippingRate, ZONES } from '../src/shipping.js';
++import { chargeableWeightKg, shippingRate, ZONES } from '../src/shipping.js';
+ 
+ test('prices by weight band and zone', () => {
+   assert.equal(shippingRate(0.5, ZONES.DOMESTIC), 500);
+@@ -12,3 +12,28 @@ test('rejects unknown zones and bad weights', () => {
+   assert.throws(() => shippingRate(1, 'XX'), /Unknown zone/);
+   assert.throws(() => shippingRate(0, ZONES.DOMESTIC), /Invalid weight/);
+ });
++
++test('uses EUR as the Europe zone code', () => {
++  assert.equal(ZONES.EUROPE, 'EUR');
++  assert.equal(shippingRate(1, 'EUR'), 1200);
++  assert.throws(() => shippingRate(1, 'EU'), /Unknown zone/);
++});
++
++test('computes the chargeable weight', () => {
++  // volumetric 40 × 30 × 20 / 5000 = 4.8 beats actual 0.8, rounds up to 5
++  assert.equal(chargeableWeightKg({ weightKg: 0.8, lengthCm: 40, widthCm: 30, heightCm: 20 }), 5);
++  // actual 1.2 beats volumetric 0.2, rounds up to 1.5
++  assert.equal(chargeableWeightKg({ weightKg: 1.2, lengthCm: 10, widthCm: 10, heightCm: 10 }), 1.5);
++  // exact multiples of 0.5 stay as they are
++  assert.equal(chargeableWeightKg({ weightKg: 2, lengthCm: 50, widthCm: 50, heightCm: 2 }), 2);
++  assert.equal(chargeableWeightKg({ weightKg: 0.1, lengthCm: 50, widthCm: 50, heightCm: 3 }), 1.5);
++  // a missing dimension falls back to the actual weight, still rounded up
++  assert.equal(chargeableWeightKg({ weightKg: 3.2, lengthCm: 100, widthCm: 100 }), 3.5);
++  assert.equal(chargeableWeightKg({ weightKg: 3 }), 3);
++});
++
++test('prices a shipment object by its chargeable weight', () => {
++  const shipment = { weightKg: 0.8, lengthCm: 40, widthCm: 30, heightCm: 20 };
++  assert.equal(shippingRate(shipment, ZONES.EUROPE), 2400);
++  assert.equal(shippingRate(0.8, ZONES.EUROPE), 1200);
++});

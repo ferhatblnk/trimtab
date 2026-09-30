@@ -1,0 +1,30 @@
+{
+  "description": "Loads the trimtab protocol into the session and warns once when the session effort is above medium.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/context/protocol.md"
+            ]
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/effort-check.sh",
+            "args": []
+          }
+        ]
+      }
+    ]
+  }
+}

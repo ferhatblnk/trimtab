@@ -1,0 +1,124 @@
+diff --git a/README.md b/README.md
+index ac4d8ce..fc276af 100644
+--- a/README.md
++++ b/README.md
+@@ -16,4 +16,10 @@ Rates depend on the destination zone and the parcel weight.
+ 
+ ## Delivery
+ 
+-`estimateDelivery(orderedAt, transitDays)` returns the expected delivery date in Istanbul time.
++`estimateDelivery(orderedAt, transitDays)` returns the expected delivery date in Istanbul time (UTC+3), as `YYYY-MM-DD`.
++
++- Orders placed before 15:00 Istanbul time on a business day ship the same day.
++- Orders placed at or after 15:00, or on a Saturday or Sunday, ship on the next business day.
++- Delivery is `transitDays` business days (Monday to Friday) after the ship date.
++
++The result does not depend on the server's time zone. Pass `orderedAt` as a `Date` or as a timestamp with an offset, such as `2026-09-18T18:00:00+03:00` or `2026-09-18T15:00:00Z`. JavaScript reads a timestamp without an offset in the server's local time.
+diff --git a/src/delivery.js b/src/delivery.js
+index 3a6f1de..59fdfb4 100644
+--- a/src/delivery.js
++++ b/src/delivery.js
+@@ -1,4 +1,20 @@
+ const CUTOFF_HOUR = 15;
++const ISTANBUL_OFFSET_MS = 3 * 60 * 60 * 1000;
++const DAY_MS = 24 * 60 * 60 * 1000;
++
++// The helpers below take a Date shifted by the Istanbul offset, so its UTC fields read as Istanbul wall-clock time.
++function isBusinessDay(date) {
++  const day = date.getUTCDay();
++  return day !== 0 && day !== 6;
++}
++
++function nextBusinessDay(date) {
++  let next = new Date(date.getTime() + DAY_MS);
++  while (!isBusinessDay(next)) {
++    next = new Date(next.getTime() + DAY_MS);
++  }
++  return next;
++}
+ 
+ /**
+  * Expected delivery date of an order, as YYYY-MM-DD in Istanbul time (Europe/Istanbul, UTC+3 all year).
+@@ -9,16 +25,13 @@ const CUTOFF_HOUR = 15;
+  * - Business days are Monday to Friday.
+  */
+ export function estimateDelivery(orderedAt, transitDays) {
+-  const date = new Date(orderedAt);
+-  if (date.getHours() >= CUTOFF_HOUR) {
+-    date.setDate(date.getDate() + 1);
++  const ordered = new Date(new Date(orderedAt).getTime() + ISTANBUL_OFFSET_MS);
++  let date = ordered;
++  if (!isBusinessDay(ordered) || ordered.getUTCHours() >= CUTOFF_HOUR) {
++    date = nextBusinessDay(date);
+   }
+-  let remaining = transitDays;
+-  while (remaining > 0) {
+-    date.setDate(date.getDate() + 1);
+-    if (date.getDay() !== 0 && date.getDay() !== 6) {
+-      remaining--;
+-    }
++  for (let i = 0; i < transitDays; i++) {
++    date = nextBusinessDay(date);
+   }
+   return date.toISOString().slice(0, 10);
+ }
+diff --git a/test/delivery.test.js b/test/delivery.test.js
+index da49612..12c9446 100644
+--- a/test/delivery.test.js
++++ b/test/delivery.test.js
+@@ -2,6 +2,53 @@ import { test } from 'node:test';
+ import assert from 'node:assert/strict';
+ import { estimateDelivery } from '../src/delivery.js';
+ 
+-test('ships a weekday morning order the same day', () => {
+-  assert.equal(estimateDelivery('2026-09-15T10:00:00+03:00', 2), '2026-09-17');
++// The result must not depend on the time zone of the machine running the code.
++const SERVER_ZONES = ['UTC', 'Europe/Istanbul', 'America/Los_Angeles', 'Asia/Tokyo', 'Pacific/Kiritimati'];
++
++function inEveryServerZone(check) {
++  const original = process.env.TZ;
++  try {
++    for (const zone of SERVER_ZONES) {
++      process.env.TZ = zone;
++      check(zone);
++    }
++  } finally {
++    if (original === undefined) {
++      delete process.env.TZ;
++    } else {
++      process.env.TZ = original;
++    }
++  }
++}
++
++// 2026-09-14 is a Monday.
++const cases = [
++  ['ships a weekday morning order the same day', '2026-09-15T10:00:00+03:00', 2, '2026-09-17'],
++  ['ships a weekday order just before the cutoff the same day', '2026-09-15T14:59:59+03:00', 1, '2026-09-16'],
++  ['ships a weekday order at the cutoff the next business day', '2026-09-15T15:00:00+03:00', 1, '2026-09-17'],
++  ['ships a Friday afternoon order the same day', '2026-09-18T14:00:00+03:00', 1, '2026-09-21'],
++  ['ships a Friday evening order on Monday', '2026-09-18T18:00:00+03:00', 2, '2026-09-23'],
++  ['ships a Saturday morning order on Monday', '2026-09-19T10:00:00+03:00', 1, '2026-09-22'],
++  ['ships a Sunday evening order on Monday', '2026-09-20T20:00:00+03:00', 1, '2026-09-22'],
++  ['ships an order just after midnight on Saturday on Monday', '2026-09-19T00:30:00+03:00', 1, '2026-09-22'],
++  ['ships an order just after midnight on a weekday the same day', '2026-09-16T00:30:00+03:00', 0, '2026-09-16'],
++  ['reads the cutoff in Istanbul time when given a UTC timestamp', '2026-09-15T12:30:00Z', 1, '2026-09-17'],
++  ['reads the weekday in Istanbul time when given a UTC timestamp', '2026-09-18T21:30:00Z', 1, '2026-09-22'],
++  ['counts only business days in transit', '2026-09-17T10:00:00+03:00', 3, '2026-09-22'],
++  ['delivers on the ship date when transit is zero days', '2026-09-18T18:00:00+03:00', 0, '2026-09-21'],
++  ['carries over month and year boundaries', '2026-12-30T16:00:00+03:00', 2, '2027-01-04'],
++];
++
++for (const [name, orderedAt, transitDays, expected] of cases) {
++  test(name, () => {
++    inEveryServerZone((zone) => {
++      assert.equal(estimateDelivery(orderedAt, transitDays), expected, `server time zone ${zone}`);
++    });
++  });
++}
++
++test('accepts a Date', () => {
++  inEveryServerZone((zone) => {
++    assert.equal(estimateDelivery(new Date('2026-09-18T18:00:00+03:00'), 2), '2026-09-23', `server time zone ${zone}`);
++  });
+ });

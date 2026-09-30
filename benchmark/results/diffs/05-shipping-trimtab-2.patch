@@ -1,0 +1,159 @@
+diff --git a/README.md b/README.md
+index ac4d8ce..9bd3a38 100644
+--- a/README.md
++++ b/README.md
+@@ -11,9 +11,19 @@ Rates depend on the destination zone and the parcel weight.
+ | Zone | Code |
+ | --- | --- |
+ | Domestic | `DOM` |
+-| Europe | `EU` |
++| Europe | `EUR` |
+ | Rest of the world | `WW` |
+ 
++`shippingRate(weight, zone)` takes either a weight in kg or a shipment `{ weightKg, lengthCm, widthCm, heightCm }`. A shipment is priced by its chargeable weight, which `chargeableWeightKg(shipment)` returns:
++
++- The volumetric weight is `lengthCm × widthCm × heightCm / 5000`.
++- The chargeable weight is the larger of the actual and the volumetric weight, rounded up to the next 0.5 kg. A weight that is already a multiple of 0.5 kg stays as it is.
++- If any dimension is missing, the actual weight is used, still rounded up to 0.5 kg.
++
++For example, a 0.8 kg parcel measuring 40 × 30 × 20 cm has a volumetric weight of 4.8 kg and a chargeable weight of 5 kg.
++
++`shipmentsToCsv` lists both `weightKg` and `chargeableWeightKg` for each shipment and prices it by the chargeable weight.
++
+ ## Delivery
+ 
+ `estimateDelivery(orderedAt, transitDays)` returns the expected delivery date in Istanbul time.
+diff --git a/src/report.js b/src/report.js
+index 02a7931..1e7010a 100644
+--- a/src/report.js
++++ b/src/report.js
+@@ -1,6 +1,6 @@
+ import { calcTotal } from './invoice.js';
+ import { formatAmount } from './money.js';
+-import { shippingRate } from './shipping.js';
++import { chargeableWeightKg, shippingRate } from './shipping.js';
+ 
+ function csvCell(value) {
+   const text = String(value);
+@@ -20,9 +20,15 @@ export function invoicesToCsv(invoices) {
+ }
+ 
+ export function shipmentsToCsv(shipments) {
+-  const rows = [['id', 'zone', 'weightKg', 'rateCents']];
++  const rows = [['id', 'zone', 'weightKg', 'chargeableWeightKg', 'rateCents']];
+   for (const shipment of shipments) {
+-    rows.push([shipment.id, shipment.zone, shipment.weightKg, shippingRate(shipment.weightKg, shipment.zone)]);
++    rows.push([
++      shipment.id,
++      shipment.zone,
++      shipment.weightKg,
++      chargeableWeightKg(shipment),
++      shippingRate(shipment, shipment.zone),
++    ]);
+   }
+   return toCsv(rows);
+ }
+diff --git a/src/shipping.js b/src/shipping.js
+index 5e46b11..f0d5449 100644
+--- a/src/shipping.js
++++ b/src/shipping.js
+@@ -1,6 +1,6 @@
+ export const ZONES = {
+   DOMESTIC: 'DOM',
+-  EUROPE: 'EU',
++  EUROPE: 'EUR',
+   WORLD: 'WW',
+ };
+ 
+@@ -11,7 +11,7 @@ const RATES = {
+     [20, 1900],
+     [Infinity, 4500],
+   ],
+-  EU: [
++  EUR: [
+     [1, 1200],
+     [5, 2400],
+     [20, 5200],
+@@ -25,7 +25,20 @@ const RATES = {
+   ],
+ };
+ 
+-export function shippingRate(weightKg, zone) {
++export function chargeableWeightKg(shipment) {
++  const { weightKg, lengthCm, widthCm, heightCm } = shipment;
++  let weight = weightKg;
++  if (lengthCm != null && widthCm != null && heightCm != null) {
++    weight = Math.max(weight, (lengthCm * widthCm * heightCm) / 5000);
++  }
++  return Math.ceil(weight * 2) / 2;
++}
++
++export function shippingRate(weightOrShipment, zone) {
++  const weightKg =
++    typeof weightOrShipment === 'object' && weightOrShipment !== null
++      ? chargeableWeightKg(weightOrShipment)
++      : weightOrShipment;
+   const table = RATES[zone];
+   if (!table) {
+     throw new Error(`Unknown zone: ${zone}`);
+diff --git a/test/report.test.js b/test/report.test.js
+index e2b483f..47217db 100644
+--- a/test/report.test.js
++++ b/test/report.test.js
+@@ -10,6 +10,12 @@ test('exports invoices as CSV', () => {
+ });
+ 
+ test('exports shipments as CSV', () => {
+-  const csv = shipmentsToCsv([{ id: 's-1', zone: 'DOM', weightKg: 2 }]);
+-  assert.equal(csv, 'id,zone,weightKg,rateCents\ns-1,DOM,2,900');
++  const csv = shipmentsToCsv([
++    { id: 's-1', zone: 'DOM', weightKg: 2 },
++    { id: 's-2', zone: 'EUR', weightKg: 0.8, lengthCm: 40, widthCm: 30, heightCm: 20 },
++  ]);
++  assert.equal(
++    csv,
++    'id,zone,weightKg,chargeableWeightKg,rateCents\ns-1,DOM,2,2,900\ns-2,EUR,0.8,5,2400',
++  );
+ });
+diff --git a/test/shipping.test.js b/test/shipping.test.js
+index 24b964e..f1839fb 100644
+--- a/test/shipping.test.js
++++ b/test/shipping.test.js
+@@ -1,6 +1,6 @@
+ import { test } from 'node:test';
+ import assert from 'node:assert/strict';
+-import { shippingRate, ZONES } from '../src/shipping.js';
++import { chargeableWeightKg, shippingRate, ZONES } from '../src/shipping.js';
+ 
+ test('prices by weight band and zone', () => {
+   assert.equal(shippingRate(0.5, ZONES.DOMESTIC), 500);
+@@ -12,3 +12,29 @@ test('rejects unknown zones and bad weights', () => {
+   assert.throws(() => shippingRate(1, 'XX'), /Unknown zone/);
+   assert.throws(() => shippingRate(0, ZONES.DOMESTIC), /Invalid weight/);
+ });
++
++test('uses the EUR code for Europe', () => {
++  assert.equal(ZONES.EUROPE, 'EUR');
++  assert.equal(shippingRate(1, 'EUR'), 1200);
++  assert.throws(() => shippingRate(1, 'EU'), /Unknown zone/);
++});
++
++test('chargeable weight is the larger of actual and volumetric, rounded up to 0.5 kg', () => {
++  assert.equal(chargeableWeightKg({ weightKg: 0.8, lengthCm: 40, widthCm: 30, heightCm: 20 }), 5);
++  assert.equal(chargeableWeightKg({ weightKg: 7.2, lengthCm: 40, widthCm: 30, heightCm: 20 }), 7.5);
++  assert.equal(chargeableWeightKg({ weightKg: 1, lengthCm: 30, widthCm: 20, heightCm: 10 }), 1.5);
++  assert.equal(chargeableWeightKg({ weightKg: 2.5, lengthCm: 10, widthCm: 10, heightCm: 10 }), 2.5);
++  assert.equal(chargeableWeightKg({ weightKg: 3, lengthCm: 10, widthCm: 10, heightCm: 10 }), 3);
++});
++
++test('chargeable weight falls back to actual weight when a dimension is missing', () => {
++  assert.equal(chargeableWeightKg({ weightKg: 1.2, lengthCm: 100, widthCm: 100 }), 1.5);
++  assert.equal(chargeableWeightKg({ weightKg: 2 }), 2);
++});
++
++test('prices a shipment by its chargeable weight', () => {
++  const shipment = { weightKg: 0.8, lengthCm: 40, widthCm: 30, heightCm: 20 };
++  assert.equal(shippingRate(shipment, ZONES.DOMESTIC), 900);
++  assert.equal(shippingRate(0.8, ZONES.DOMESTIC), 500);
++  assert.throws(() => shippingRate({ weightKg: 0 }, ZONES.DOMESTIC), /Invalid weight/);
++});

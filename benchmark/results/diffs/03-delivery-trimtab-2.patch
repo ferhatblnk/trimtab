@@ -1,0 +1,71 @@
+diff --git a/src/delivery.js b/src/delivery.js
+index 3a6f1de..89048d3 100644
+--- a/src/delivery.js
++++ b/src/delivery.js
+@@ -1,4 +1,10 @@
+ const CUTOFF_HOUR = 15;
++const ISTANBUL_OFFSET_MS = 3 * 60 * 60 * 1000;
++
++function isBusinessDay(date) {
++  const day = date.getUTCDay();
++  return day !== 0 && day !== 6;
++}
+ 
+ /**
+  * Expected delivery date of an order, as YYYY-MM-DD in Istanbul time (Europe/Istanbul, UTC+3 all year).
+@@ -9,14 +15,18 @@ const CUTOFF_HOUR = 15;
+  * - Business days are Monday to Friday.
+  */
+ export function estimateDelivery(orderedAt, transitDays) {
+-  const date = new Date(orderedAt);
+-  if (date.getHours() >= CUTOFF_HOUR) {
+-    date.setDate(date.getDate() + 1);
++  // Shift to Istanbul wall-clock time and use only UTC accessors, so the
++  // result does not depend on the server's time zone.
++  const date = new Date(new Date(orderedAt).getTime() + ISTANBUL_OFFSET_MS);
++  if (!isBusinessDay(date) || date.getUTCHours() >= CUTOFF_HOUR) {
++    do {
++      date.setUTCDate(date.getUTCDate() + 1);
++    } while (!isBusinessDay(date));
+   }
+   let remaining = transitDays;
+   while (remaining > 0) {
+-    date.setDate(date.getDate() + 1);
+-    if (date.getDay() !== 0 && date.getDay() !== 6) {
++    date.setUTCDate(date.getUTCDate() + 1);
++    if (isBusinessDay(date)) {
+       remaining--;
+     }
+   }
+diff --git a/test/delivery.test.js b/test/delivery.test.js
+index da49612..b19af83 100644
+--- a/test/delivery.test.js
++++ b/test/delivery.test.js
+@@ -5,3 +5,27 @@ import { estimateDelivery } from '../src/delivery.js';
+ test('ships a weekday morning order the same day', () => {
+   assert.equal(estimateDelivery('2026-09-15T10:00:00+03:00', 2), '2026-09-17');
+ });
++
++test('ships a weekday order at the cutoff the next business day', () => {
++  // Tuesday 15:00 Istanbul ships Wednesday.
++  assert.equal(estimateDelivery('2026-09-15T15:00:00+03:00', 2), '2026-09-18');
++  assert.equal(estimateDelivery('2026-09-15T14:59:59+03:00', 0), '2026-09-15');
++});
++
++test('ships a Friday evening order on Monday', () => {
++  // Friday 18:00 Istanbul ships Monday 21st, delivers Wednesday 23rd.
++  assert.equal(estimateDelivery('2026-09-18T18:00:00+03:00', 2), '2026-09-23');
++  assert.equal(estimateDelivery('2026-09-18T18:00:00+03:00', 0), '2026-09-21');
++});
++
++test('ships weekend orders on Monday', () => {
++  assert.equal(estimateDelivery('2026-09-19T09:00:00+03:00', 1), '2026-09-22');
++  assert.equal(estimateDelivery('2026-09-20T23:00:00+03:00', 0), '2026-09-21');
++});
++
++test('uses the Istanbul date just after midnight', () => {
++  // 00:30 Wednesday in Istanbul is still Tuesday 21:30 in UTC.
++  assert.equal(estimateDelivery('2026-09-15T21:30:00Z', 0), '2026-09-16');
++  // 00:30 Saturday in Istanbul is Friday 21:30 UTC; ships Monday.
++  assert.equal(estimateDelivery('2026-09-18T21:30:00Z', 0), '2026-09-21');
++});
