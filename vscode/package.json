@@ -1,0 +1,23 @@
+{
+  "name": "trimtab",
+  "displayName": "trimtab: Auto effort for Claude Code",
+  "description": "One switch for automatic effort in Claude Code: routine steps stay cheap, and high effort is spent only on the parts of a task that need it.",
+  "version": "0.1.0",
+  "publisher": "ferhatblnk",
+  "license": "MIT",
+  "author": { "name": "Ferhat Talha Bulanık" },
+  "homepage": "https://github.com/ferhatblnk/trimtab",
+  "repository": { "type": "git", "url": "https://github.com/ferhatblnk/trimtab" },
+  "bugs": { "url": "https://github.com/ferhatblnk/trimtab/issues" },
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["AI", "Other"],
+  "keywords": ["claude code", "effort", "tokens", "cost", "ai"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "trimtab.toggle", "title": "Turn Auto effort on or off", "category": "trimtab" },
+      { "command": "trimtab.install", "title": "Install the Claude Code plugin", "category": "trimtab" }
+    ]
+  }
+}

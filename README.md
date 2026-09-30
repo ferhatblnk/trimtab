@@ -28,6 +28,12 @@ The scout sizes each part on this scale:
 
 ## Install
 
+### VS Code
+
+Install the **trimtab** extension, then click **trimtab** in the status bar. It installs the plugin on first use and gives you an **Auto** switch: on sets new sessions to `medium` effort and enables trimtab; off restores your own effort level. The extension lives in [`vscode/`](vscode/).
+
+### Command line
+
 ```bash
 claude plugin marketplace add ferhatblnk/trimtab
 claude plugin install trimtab@trimtab
